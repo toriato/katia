@@ -1,4 +1,4 @@
-package main
+package katia
 
 import "github.com/bwmarrin/discordgo"
 

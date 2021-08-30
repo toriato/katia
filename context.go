@@ -1,4 +1,4 @@
-package main
+package katia
 
 type Context struct {
 	values map[string]interface{}
