@@ -1,12 +1,16 @@
 package katia
 
 import (
+	"path/filepath"
+	"plugin"
+
 	"github.com/bwmarrin/discordgo"
 	"github.com/sirupsen/logrus"
 )
 
 type Bot struct {
-	Context
+	*Context
+
 	Session *discordgo.Session
 	Logger  *logrus.Logger
 
@@ -17,6 +21,7 @@ type Bot struct {
 
 func New(token string) (*Bot, error) {
 	bot := &Bot{
+		Context:    &Context{},
 		Logger:     logrus.New(),
 		plugins:    make(map[string]*Plugin),
 		commands:   make(map[string]*Command),
@@ -29,15 +34,44 @@ func New(token string) (*Bot, error) {
 			return nil, err
 		}
 
-		if err := session.Open(); err != nil {
-			return nil, err
-		}
+		session.AddHandler(func(_ *discordgo.Session, e *discordgo.Ready) {
+			handleReady(bot, e)
+		})
 
 		session.AddHandler(func(_ *discordgo.Session, e *discordgo.InteractionCreate) {
 			handleInteractionCreate(bot, e)
 		})
 
 		bot.Session = session
+	}
+
+	// 플러그인 등록하기
+	{
+		paths, err := filepath.Glob("plugins/*.so")
+		if err != nil {
+			return nil, err
+		}
+
+		for _, path := range paths {
+			pkg, err := plugin.Open(path)
+			if err != nil {
+				return nil, err
+			}
+
+			symbol, err := pkg.Lookup("Plugin")
+			if err != nil {
+				return nil, err
+			}
+
+			plugin, ok := symbol.(*Plugin)
+			if !ok {
+				return nil, ErrPluginBroken
+			}
+
+			if err := bot.RegisterPlugin(plugin); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return bot, nil
@@ -98,6 +132,8 @@ func (bot *Bot) RegisterPlugin(plugin *Plugin) error {
 		}
 	}
 
+	bot.Logger.Infof("Plugin %s v%+v loaded", plugin.Name, plugin.Version)
+
 	bot.plugins[plugin.Name] = plugin
 	return nil
 }
@@ -107,18 +143,6 @@ func (bot *Bot) RegisterCommand(command *Command) error {
 	if bot.Command(command.Name) != nil {
 		return ErrCommandConflict
 	}
-
-	appID := bot.Session.State.User.ID
-	app := &discordgo.ApplicationCommand{
-		Name:        command.Name,
-		Description: command.Description,
-	}
-
-	if command.Options != nil {
-		app.Options = command.parseOptions(command.Options)
-	}
-
-	bot.Session.ApplicationCommandCreate(appID, "872959811774459945", app)
 
 	bot.commands[command.Name] = command
 	return nil
