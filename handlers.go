@@ -2,6 +2,24 @@ package katia
 
 import "github.com/bwmarrin/discordgo"
 
+func handleReady(bot *Bot, e *discordgo.Ready) {
+	for _, command := range bot.commands {
+		appID := bot.Session.State.User.ID
+		app := &discordgo.ApplicationCommand{
+			Name:        command.Name,
+			Description: command.Description,
+		}
+
+		if command.Options != nil {
+			app.Options = command.parseOptions(command.Options)
+		}
+
+		if _, err := bot.Session.ApplicationCommandCreate(appID, "872959811774459945", app); err != nil {
+			bot.Logger.Error(err)
+		}
+	}
+}
+
 func handleInteractionCreate(bot *Bot, e *discordgo.InteractionCreate) {
 	var result interface{}
 	var executor string
@@ -72,6 +90,8 @@ func handleInteractionApplicationCommand(bot *Bot, e *discordgo.InteractionCreat
 		ctx.Options = ctx.formatOptions(command.Options, data.Options)
 	}
 
+	bot.Logger.Infof("%s requested '%s' command", e.Member.User.ID, data.Name)
+
 	return command.OnExecute(ctx)
 }
 
@@ -88,6 +108,8 @@ func handleInteractionMessageComponent(bot *Bot, e *discordgo.InteractionCreate)
 		Data:        data,
 		Interaction: e.Interaction,
 	}
+
+	bot.Logger.Infof("%s requested '%s' component", e.Member.User.ID, data.CustomID)
 
 	return component.OnExecute(ctx)
 }
