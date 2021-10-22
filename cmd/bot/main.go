@@ -8,7 +8,7 @@ import (
 	"github.com/toriato/katia"
 )
 
-const token = "Nzc3ODM0NDExMzI4NjY3NjQ5.X7JMvw.bQrqBEL7cji3gPfgAsniOEOlBc0"
+const token = "yea i accidentally leak my token and i feel dumb af :)"
 
 func main() {
 	bot, err := katia.New(token)
