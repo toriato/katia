@@ -5,23 +5,25 @@ import (
 	"reflect"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/sirupsen/logrus"
 )
 
 type Command struct {
-	Name        string
-	Description string
-	Options     interface{}
-	Plugin      *Plugin
+	Name        string      `json:"name"`
+	Description string      `json:"-"`
+	Options     interface{} `json:"-"`
+	Plugin      *Plugin     `json:"-"`
 
-	OnExecute func(ctx CommandContext) interface{}
+	OnExecute func(ctx CommandContext) interface{} `json:"-"`
 }
 
 type CommandContext struct {
-	Bot         *Bot
-	Command     *Command
-	Interaction *discordgo.Interaction
-	Data        discordgo.ApplicationCommandInteractionData
-	Options     interface{}
+	Bot         *Bot                                        `json:"-"`
+	Command     *Command                                    `json:"command"`
+	Interaction *discordgo.Interaction                      `json:"interaction"`
+	Data        discordgo.ApplicationCommandInteractionData `json:"-"`
+	Logger      *logrus.Entry                               `json:"-"`
+	Options     interface{}                                 `json:"options"`
 }
 
 var (

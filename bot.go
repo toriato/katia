@@ -1,11 +1,14 @@
 package katia
 
 import (
+	"os"
 	"path/filepath"
 	"plugin"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/sirupsen/logrus"
+
+	mapset "github.com/deckarep/golang-set"
 )
 
 type Bot struct {
@@ -21,11 +24,18 @@ type Bot struct {
 
 func New(token string) (*Bot, error) {
 	bot := &Bot{
-		Context:    &Context{},
-		Logger:     logrus.New(),
-		plugins:    make(map[string]*Plugin),
-		commands:   make(map[string]*Command),
-		components: make(map[string]*Component),
+		Context: &Context{values: make(map[string]interface{})},
+		Logger: &logrus.Logger{
+			Out:   os.Stdout,
+			Level: logrus.InfoLevel,
+			Formatter: &logrus.JSONFormatter{
+				DataKey:     "data",
+				PrettyPrint: true,
+			},
+		},
+		plugins:    map[string]*Plugin{},
+		commands:   map[string]*Command{},
+		components: map[string]*Component{},
 	}
 
 	{
@@ -45,7 +55,6 @@ func New(token string) (*Bot, error) {
 		bot.Session = session
 	}
 
-	// 플러그인 등록하기
 	{
 		paths, err := filepath.Glob("plugins/*.so")
 		if err != nil {
@@ -110,31 +119,15 @@ func (bot *Bot) RegisterPlugin(plugin *Plugin) error {
 		return ErrPluginConflict
 	}
 
-	if plugin.OnRegister != nil {
-		if err := plugin.OnRegister(bot); err != nil {
-			return err
-		}
+	if plugin.Logger == nil {
+		plugin.Logger = bot.Logger.WithField("plugin", plugin)
 	}
-
-	// 플러그인 속 컴포넌트 등록하기
-	for _, component := range plugin.Components {
-		component.Plugin = plugin
-		if err := bot.RegisterComponent(component); err != nil {
-			return err
-		}
-	}
-
-	// 플러그인 속 명령어 등록하기
-	for _, command := range plugin.Commands {
-		command.Plugin = plugin
-		if err := bot.RegisterCommand(command); err != nil {
-			return err
-		}
-	}
-
-	bot.Logger.Infof("Plugin %s v%+v loaded", plugin.Name, plugin.Version)
 
 	bot.plugins[plugin.Name] = plugin
+
+	bot.Logger.
+		WithField("plugin", plugin).
+		Infof("plugin '%s' registered", plugin.Name)
 	return nil
 }
 
@@ -144,7 +137,25 @@ func (bot *Bot) RegisterCommand(command *Command) error {
 		return ErrCommandConflict
 	}
 
+	appID := bot.Session.State.User.ID
+	app := &discordgo.ApplicationCommand{
+		Name:        command.Name,
+		Description: command.Description,
+	}
+
+	if command.Options != nil {
+		app.Options = command.parseOptions(command.Options)
+	}
+
+	log := bot.Logger.WithField("command", command)
+
+	if _, err := bot.Session.ApplicationCommandCreate(appID, "882969983418785802", app); err != nil {
+		log.Error(err)
+	}
+
 	bot.commands[command.Name] = command
+
+	log.Infof("command '%s' registered", command.Name)
 	return nil
 }
 
@@ -155,5 +166,55 @@ func (bot *Bot) RegisterComponent(component *Component) error {
 	}
 
 	bot.components[component.Name] = component
+
+	bot.Logger.
+		WithField("component", component).
+		Infof("component '%s' registered", component.Name)
 	return nil
+}
+
+func (bot Bot) ResolvePluginGraph() ([]*Plugin, error) {
+	sets := map[string]mapset.Set{}
+	resolved := []*Plugin{}
+
+	for name, plugin := range bot.plugins {
+		set := mapset.NewSet()
+
+		for _, dep := range plugin.Depends {
+			set.Add(dep)
+		}
+
+		sets[name] = set
+	}
+
+	for len(sets) != 0 {
+		ready := mapset.NewSet()
+
+		for name, deps := range sets {
+			if deps.Cardinality() == 0 {
+				ready.Add(name)
+			}
+		}
+
+		if ready.Cardinality() == 0 {
+			g := []*Plugin{}
+
+			for name := range sets {
+				g = append(g, bot.plugins[name])
+			}
+
+			return g, ErrPluginDependCircular
+		}
+
+		for name := range ready.Iter() {
+			delete(sets, name.(string))
+			resolved = append(resolved, bot.plugins[name.(string)])
+		}
+
+		for name, deps := range sets {
+			sets[name] = deps.Difference(ready)
+		}
+	}
+
+	return resolved, nil
 }

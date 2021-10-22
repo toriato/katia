@@ -4,19 +4,21 @@ import (
 	"errors"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/sirupsen/logrus"
 )
 
 type Component struct {
-	Name      string
-	Plugin    *Plugin
-	OnExecute func(ctx ComponentContext) interface{}
+	Name      string                                 `json:"name"`
+	Plugin    *Plugin                                `json:"-"`
+	OnExecute func(ctx ComponentContext) interface{} `json:"-"`
 }
 
 type ComponentContext struct {
-	Bot         *Bot
-	Component   *Component
-	Interaction *discordgo.Interaction
-	Data        discordgo.MessageComponentInteractionData
+	Bot         *Bot                                      `json:"-"`
+	Component   *Component                                `json:"component"`
+	Interaction *discordgo.Interaction                    `json:"interaction"`
+	Logger      *logrus.Entry                             `json:"-"`
+	Data        discordgo.MessageComponentInteractionData `json:"-"`
 }
 
 var (

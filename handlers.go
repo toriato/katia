@@ -1,37 +1,59 @@
 package katia
 
-import "github.com/bwmarrin/discordgo"
+import (
+	"fmt"
+	"log"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+)
 
 func handleReady(bot *Bot, e *discordgo.Ready) {
-	for _, command := range bot.commands {
-		appID := bot.Session.State.User.ID
-		app := &discordgo.ApplicationCommand{
-			Name:        command.Name,
-			Description: command.Description,
-		}
+	if plugins, err := bot.ResolvePluginGraph(); err != nil {
+		bot.Logger.WithField("plugins", plugins).Fatal(err)
+	} else {
+		for _, plugin := range plugins {
+			if plugin.OnEnable != nil {
+				if err := plugin.OnEnable(bot, plugin); err != nil {
+					log.Fatal(err)
+				}
+			}
 
-		if command.Options != nil {
-			app.Options = command.parseOptions(command.Options)
-		}
-
-		if _, err := bot.Session.ApplicationCommandCreate(appID, "872959811774459945", app); err != nil {
-			bot.Logger.Error(err)
+			plugin.Logger.Infof("plugin '%s' enabled", plugin.Name)
 		}
 	}
 }
 
 func handleInteractionCreate(bot *Bot, e *discordgo.InteractionCreate) {
 	var result interface{}
-	var executor string
+
+	log := bot.Logger.WithField("interaction", e.Interaction)
 
 	switch e.Type {
 	case discordgo.InteractionApplicationCommand:
-		result = handleInteractionApplicationCommand(bot, e)
-		executor = e.ApplicationCommandData().Name
+		i, r := handleInteractionCommand(bot, e)
+		result = r
+
+		log = log.WithFields(logrus.Fields{
+			"type":     "command",
+			"instance": i,
+		})
 	case discordgo.InteractionMessageComponent:
-		result = handleInteractionMessageComponent(bot, e)
-		executor = e.MessageComponentData().CustomID
+		i, r := handleInteractionComponent(bot, e)
+		result = r
+		log = log.WithFields(logrus.Fields{
+			"type":     "component",
+			"instance": i,
+		})
 	}
+
+	if result == nil {
+		log.Warnf("%s executed missing interaction", e.Member.User.ID)
+		return
+	}
+
+	log.Infof("%s executed interaction", e.Member.User.ID)
 
 	res := &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -39,44 +61,60 @@ func handleInteractionCreate(bot *Bot, e *discordgo.InteractionCreate) {
 	}
 
 	switch r := result.(type) {
-	case nil:
-		return
+	case Error:
+		res.Data.Flags = 1 << 6
+		res.Data.Embeds = []*discordgo.MessageEmbed{{
+			Description: r.Error(),
+			Color:       0xFF0000,
+		}}
 
 	case error:
-		bot.Logger.Error(r)
+		id := uuid.New().String()
+
+		log.WithField("id", id).Errorf("%+v", r)
+		res.Data.Flags = 1 << 6
 		res.Data.Embeds = []*discordgo.MessageEmbed{{
 			Description: "내부 오류가 발생했습니다",
-			Color:       0xFF0000,
+			Footer: &discordgo.MessageEmbedFooter{
+				Text: id,
+			},
+			Color: 0xFF0000,
 		}}
 
 	case bool:
 		res.Type = discordgo.InteractionResponseDeferredMessageUpdate
+
 	case string:
 		res.Data.Content = r
-	case discordgo.MessageEmbed:
-		res.Data.Embeds = []*discordgo.MessageEmbed{&r}
-	case []discordgo.MessageEmbed:
-		res.Data.Embeds = []*discordgo.MessageEmbed{}
-		for _, embed := range r {
-			res.Data.Embeds = append(res.Data.Embeds, &embed)
-		}
-	case discordgo.InteractionResponse:
-		res = &r
-	case discordgo.InteractionResponseData:
-		res.Data = &r
+
+	case *discordgo.MessageEmbed:
+		res.Data.Embeds = []*discordgo.MessageEmbed{r}
+
+	case []*discordgo.MessageEmbed:
+		res.Data.Embeds = r
+
+	case *discordgo.InteractionResponse:
+		res = r
+
+	case *discordgo.InteractionResponseData:
+		res.Data = r
+
 	default:
-		bot.Logger.Warnf("%s 실행자가 지원하지 않는 %v 자료형을 반환했습니다: %+v", executor, r, r)
+		bot.Logger.
+			WithField("type", fmt.Sprintf("%v", r)).
+			WithField("value", fmt.Sprintf("%#v", r)).
+			Warnf("interaction returns unsupported type", r)
 		res.Data.Content = `¯\_(ツ)_/¯`
 	}
 
 	bot.Session.InteractionRespond(e.Interaction, res)
 }
 
-func handleInteractionApplicationCommand(bot *Bot, e *discordgo.InteractionCreate) interface{} {
+func handleInteractionCommand(bot *Bot, e *discordgo.InteractionCreate) (interface{}, interface{}) {
 	data := e.ApplicationCommandData()
 	command := bot.Command(data.Name)
 	if command == nil {
-		return nil
+		return nil, nil
 	}
 
 	ctx := CommandContext{
@@ -86,20 +124,20 @@ func handleInteractionApplicationCommand(bot *Bot, e *discordgo.InteractionCreat
 		Interaction: e.Interaction,
 	}
 
+	ctx.Logger = command.Plugin.Logger.WithField("context", ctx)
+
 	if command.Options != nil {
 		ctx.Options = ctx.formatOptions(command.Options, data.Options)
 	}
 
-	bot.Logger.Infof("%s requested '%s' command", e.Member.User.ID, data.Name)
-
-	return command.OnExecute(ctx)
+	return command, command.OnExecute(ctx)
 }
 
-func handleInteractionMessageComponent(bot *Bot, e *discordgo.InteractionCreate) interface{} {
+func handleInteractionComponent(bot *Bot, e *discordgo.InteractionCreate) (interface{}, interface{}) {
 	data := e.MessageComponentData()
 	component := bot.Component(data.CustomID)
 	if component == nil {
-		return nil
+		return nil, nil
 	}
 
 	ctx := ComponentContext{
@@ -109,7 +147,7 @@ func handleInteractionMessageComponent(bot *Bot, e *discordgo.InteractionCreate)
 		Interaction: e.Interaction,
 	}
 
-	bot.Logger.Infof("%s requested '%s' component", e.Member.User.ID, data.CustomID)
+	ctx.Logger = component.Plugin.Logger.WithField("context", ctx)
 
-	return component.OnExecute(ctx)
+	return component, component.OnExecute(ctx)
 }
